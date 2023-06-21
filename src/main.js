@@ -43,48 +43,55 @@ defaultHandler.use(
   })
 );
 
-defaultHandler.all("*", async (req, res) => {
-  await startAutocleanupActiveSpan("proxy.regular", async (span) => {
-    /**
-     * Extract the destination from the request object.
-     */
-    const { method, url, headers, body } = req;
-    span.setAttributes({ method, url });
-    logger.debug({ method, url, headers, body });
-    /**
-     * Raise an exception if the data is not provided properly.
-     * Properly validates the url.
-     */
-    if (!isValidUrl(url)) {
-      throw new BadRequest("Invalid URL");
-    }
+defaultHandler.all("*", async (req, res, next) => {
+  try {
+    await startAutocleanupActiveSpan("proxy.regular", async (span) => {
+      /**
+       * Extract the destination from the request object.
+       */
+      const { method, url, headers, body } = req;
+      span.setAttributes({ method, url });
+      logger.debug({ method, url, headers, body });
+      /**
+       * Raise an exception if the data is not provided properly.
+       * Properly validates the url.
+       */
+      if (!isValidUrl(url)) {
+        throw new BadRequest("Invalid URL");
+      }
 
-    /**
-     * Check if the request body is too large.
-     */
-    if (getSizeInBytes(JSON.stringify(body)) > proxyOptions.maxRequestSizeInBytes) {
-      throw new BadRequest("Request body too large");
-    }
+      /**
+       * Check if the request body is too large.
+       */
+      if (getSizeInBytes(JSON.stringify(body)) > proxyOptions.maxRequestSizeInBytes) {
+        throw new BadRequest("Request body too large");
+      }
 
-    /**
-     * Send the request to the destination.
-     */
-    const response = await axios({
-      method,
-      url,
-      headers,
-      data: body,
-      timeout: proxyOptions.requestTimeoutInMilliseconds,
-      responseType: "stream",
+      /**
+       * Send the request to the destination.
+       */
+      const response = await axios({
+        method,
+        url,
+        headers,
+        data: body,
+        timeout: proxyOptions.requestTimeoutInMilliseconds,
+        responseType: "stream",
+      });
+
+      /**
+       * Return the response from the destination to the client.
+       */
+
+      res.status(response.status);
+      response.data.pipe(res);
     });
-
+  } catch (e) {
     /**
-     * Return the response from the destination to the client.
+     * Ugly a** way to handle exceptions.
      */
-
-    res.status(response.status);
-    response.data.pipe(res);
-  });
+    next(e);
+  }
 });
 
 /**
@@ -97,33 +104,40 @@ const proxy = http.createServer(defaultHandler);
  * Handle tunneling.
  */
 proxy.on("connect", async (req, clientSocket, head) => {
-  await startAutocleanupActiveSpan("proxy.connect", async (span) => {
-    /**
-     * Extract the destination from the request object.
-     */
-    const { url } = req;
-    const [hostname, port] = url.split(":");
-    span.setAttributes({ url, hostname, port });
-    logger.debug({ url, hostname, port });
-
-    /**
-     * Create a connection to the destination.
-     * @type {Socket}
-     */
-    const serverSocket = connect(port, hostname, () => {
-      clientSocket.write(
-        "HTTP/1.1 200 Connection Established\r\n" +
-          "Proxy-agent: Node.js-Proxy\r\n" +
-          "\r\n"
-      );
-      serverSocket.write(head);
+  try {
+    await startAutocleanupActiveSpan("proxy.connect", async (span) => {
       /**
-       * Intercept the data if needed (aka man-in-the-middle).
+       * Extract the destination from the request object.
        */
-      serverSocket.pipe(clientSocket);
-      clientSocket.pipe(serverSocket);
+      const { url } = req;
+      const [hostname, port] = url.split(":");
+      span.setAttributes({ url, hostname, port });
+      logger.debug({ url, hostname, port });
+
+      /**
+       * Create a connection to the destination.
+       * @type {Socket}
+       */
+      const serverSocket = connect(port, hostname, () => {
+        clientSocket.write(
+          "HTTP/1.1 200 Connection Established\r\n" +
+            "Proxy-agent: Node.js-Proxy\r\n" +
+            "\r\n"
+        );
+        serverSocket.write(head);
+        /**
+         * Intercept the data if needed (aka man-in-the-middle).
+         */
+        serverSocket.pipe(clientSocket);
+        clientSocket.pipe(serverSocket);
+      });
     });
-  });
+  } catch (e) {
+    /**
+     * Close the connection if an error occurs.
+     */
+    clientSocket.end();
+  }
 });
 
 (async () => {
