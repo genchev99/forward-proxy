@@ -27,4 +27,12 @@ Success criteria will be to be able to run the service and fire a HTTPS request 
 1. Run 'docker-compose up' to start the service.
 2. Run `./test.sh` (from the root directory) to run the smoke test.
 
+# Monitoring
+
+This project is using OpenTelemetry for monitoring.
+At the moment, the only exporter is the console exporter.
+This can be changed by editing the `otel-collector-config.yaml` file.
+The project is using a collector which is running in a docker container.
+The collector is a "gateway" for the telemetry data.
+
 ## Grab a drink 🍺
